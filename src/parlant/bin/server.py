@@ -698,17 +698,20 @@ async def initialize_container(
 
         shared_chroma_db: VectorDatabase | None = None
 
-        if c[OptimizationPolicy].use_embedding_cache():
-            c[EmbeddingCache] = BasicEmbeddingCache(
-                await EXIT_STACK.enter_async_context(
-                    JSONFileDocumentDatabase(
-                        c[Logger],
-                        PARLANT_HOME_DIR / "cache_embeddings.json",
+        async def make_embedding_cache() -> EmbeddingCache:
+            if c[OptimizationPolicy].use_embedding_cache():
+                return BasicEmbeddingCache(
+                    await EXIT_STACK.enter_async_context(
+                        JSONFileDocumentDatabase(
+                            c[Logger],
+                            PARLANT_HOME_DIR / "cache_embeddings.json",
+                        )
                     )
                 )
-            )
-        else:
-            c[EmbeddingCache] = NullEmbeddingCache()
+            else:
+                return NullEmbeddingCache()
+
+        await try_define_func(EmbeddingCache, make_embedding_cache)
 
         async def get_shared_chroma_db() -> VectorDatabase:
             nonlocal shared_chroma_db
