@@ -3083,20 +3083,6 @@ class Server:
             async def get_embedder_type() -> type[Embedder]:
                 return type(await c()[NLPService].get_embedder())
 
-            # Configure embedding cache based on cache_store setting
-            if c()[OptimizationPolicy].use_embedding_cache():
-                embedding_cache_db: DocumentDatabase
-                if self._cache_store == "elasticsearch":
-                    embedding_cache_db = await make_elasticsearch_db("embedding_cache")
-                elif self._cache_store == "local":
-                    embedding_cache_db = await make_json_db(PARLANT_HOME_DIR / "cache_embeddings.json")
-                else:  # transient
-                    embedding_cache_db = TransientDocumentDatabase()
-
-                c()[EmbeddingCache] = BasicEmbeddingCache(embedding_cache_db)
-            else:
-                c()[EmbeddingCache] = NullEmbeddingCache()
-
             # Create vector database based on configuration
             if self._vector_store == "elasticsearch":
                 if importlib.util.find_spec("elasticsearch") is None:
@@ -3160,6 +3146,42 @@ class Server:
             if self._configure_hooks:
                 hooks = await self._configure_hooks(c[EngineHooks])
                 latest_container[EngineHooks] = hooks
+
+            # Define embedding cache before server.py's initialize_container runs
+            # This prevents server.py from creating its own default version
+            if self._cache_store != "local":
+                if latest_container[OptimizationPolicy].use_embedding_cache():
+                    embedding_cache_db: DocumentDatabase
+                    if self._cache_store == "elasticsearch":
+                        if importlib.util.find_spec("elasticsearch") is None:
+                            raise SDKError(
+                                "Elasticsearch requires an additional package to be installed. "
+                                "Install it with: pip install elasticsearch"
+                            )
+
+                        from parlant.adapters.db.elasticsearch import (
+                            ElasticsearchDocumentDatabase,
+                            create_elasticsearch_document_client_from_env,
+                            get_elasticsearch_document_index_prefix_from_env,
+                        )
+
+                        es_doc_client = create_elasticsearch_document_client_from_env()
+                        doc_index_prefix = get_elasticsearch_document_index_prefix_from_env()
+
+                        embedding_cache_db = await self._exit_stack.enter_async_context(
+                            ElasticsearchDocumentDatabase(
+                                elasticsearch_client=es_doc_client,
+                                index_prefix=f"{doc_index_prefix}_db",
+                                logger=latest_container[Logger],
+                                store_context="embedding_cache",
+                            )
+                        )
+                    else:  # transient
+                        embedding_cache_db = TransientDocumentDatabase()
+
+                    latest_container[EmbeddingCache] = BasicEmbeddingCache(embedding_cache_db)
+                else:
+                    latest_container[EmbeddingCache] = NullEmbeddingCache()
 
             return latest_container
 
