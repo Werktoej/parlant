@@ -217,16 +217,16 @@ class ElasticsearchVectorDatabase(VectorDatabase):
         self._embedder_factory: EmbedderFactory = embedder_factory
         self._embedding_cache_provider: EmbeddingCacheProvider = embedding_cache_provider
         self._collections: dict[str, ElasticsearchVectorCollection[BaseDocument]] = {}
-        self._metadata_index: str = f"{index_prefix}_metadata"
+        self._metadata_index: str = f"{index_prefix}_vecdb_metadata"
         self._version: int = 1
 
     def _get_embedded_index_name(self, collection_name: str, embedder_type: type[Embedder]) -> str:
         """Generate the full Elasticsearch index name for an embedded vector collection."""
-        return f"{self.index_prefix}_{collection_name}_{embedder_type.__name__}".lower()
+        return f"{self.index_prefix}_vecdb_{collection_name}_{embedder_type.__name__}".lower()
 
     def _get_unembedded_index_name(self, collection_name: str) -> str:
         """Generate the full Elasticsearch index name for an unembedded collection (source of truth)."""
-        return f"{self.index_prefix}_{collection_name}_unembedded".lower()
+        return f"{self.index_prefix}_vecdb_{collection_name}_unembedded".lower()
 
     async def __aenter__(self) -> Self:
         """Enter async context manager."""
@@ -246,10 +246,10 @@ class ElasticsearchVectorDatabase(VectorDatabase):
 
     async def _create_index_template(self) -> None:
         """Create index template for consistent mapping across collections."""
-        template_name: str = f"{self.index_prefix}_template"
+        template_name: str = f"{self.index_prefix}_vecdb_template"
 
         template: dict[str, Any] = {
-            "index_patterns": [f"{self.index_prefix}_*"],
+            "index_patterns": [f"{self.index_prefix}_vecdb_*"],
             "template": {
                 "settings": get_elasticsearch_index_settings_from_env(),
                 "mappings": {

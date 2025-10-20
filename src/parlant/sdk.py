@@ -59,7 +59,7 @@ from typing_extensions import overload
 from lagom import Container
 
 
-from parlant.adapters.db.json_file import JSONFileDocumentCollection, JSONFileDocumentDatabase
+from parlant.adapters.db.json_file import JSONFileDocumentDatabase
 from parlant.adapters.db.transient import TransientDocumentDatabase
 from parlant.adapters.vector_db.transient import TransientVectorDatabase
 from parlant.api.authorization import (
@@ -114,10 +114,12 @@ from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociationStore,
 )
 from parlant.core.nlp.embedding import (
+    BasicEmbeddingCache,
     Embedder,
     EmbedderFactory,
     EmbeddingCache,
     EmbeddingResult,
+    NullEmbeddingCache,
 )
 from parlant.core.nlp.generation import (
     FallbackSchematicGenerator,
@@ -126,7 +128,11 @@ from parlant.core.nlp.generation import (
 )
 from parlant.core.nlp.tokenization import EstimatingTokenizer
 from parlant.core.persistence.common import ObjectId
-from parlant.core.persistence.document_database import DocumentDatabase, identity_loader_for
+from parlant.core.persistence.document_database import (
+    DocumentCollection,
+    DocumentDatabase,
+    identity_loader_for,
+)
 from parlant.core.relationships import (
     RelationshipKind,
     RelationshipDocumentStore,
@@ -423,12 +429,12 @@ class _CachedEvaluator:
 
     def __init__(
         self,
-        db: JSONFileDocumentDatabase,
+        db: DocumentDatabase,
         container: Container,
     ) -> None:
-        self._db: JSONFileDocumentDatabase = db
-        self._guideline_collection: JSONFileDocumentCollection[_CachedGuidelineEvaluation]
-        self._journey_collection: JSONFileDocumentCollection[_CachedJourneyEvaluation]
+        self._db: DocumentDatabase = db
+        self._guideline_collection: DocumentCollection[_CachedGuidelineEvaluation]
+        self._journey_collection: DocumentCollection[_CachedJourneyEvaluation]
 
         self._container = container
         self._logger = container[Logger]
@@ -2154,9 +2160,17 @@ class Server:
         port: int = 8800,
         tool_service_port: int = 8818,
         nlp_service: Callable[[Container], NLPService] = NLPServices.openai,
-        session_store: Literal["transient", "local"] | str | SessionStore = "transient",
-        customer_store: Literal["transient", "local"] | str | CustomerStore = "transient",
-        variable_store: Literal["transient", "local"] | str | ContextVariableStore = "transient",
+        session_store: Literal["transient", "local", "elasticsearch"]
+        | str
+        | SessionStore = "transient",
+        customer_store: Literal["transient", "local", "elasticsearch"]
+        | str
+        | CustomerStore = "transient",
+        variable_store: Literal["transient", "local", "elasticsearch"]
+        | str
+        | ContextVariableStore = "transient",
+        vector_store: Literal["transient", "elasticsearch"] = "transient",
+        cache_store: Literal["transient", "local", "elasticsearch"] = "local",
         log_level: LogLevel = LogLevel.INFO,
         modules: list[str] = [],
         migrate: bool = False,
@@ -2177,6 +2191,8 @@ class Server:
         self._session_store = session_store
         self._customer_store = customer_store
         self._context_variable_store = variable_store
+        self._vector_store = vector_store
+        self._cache_store = cache_store
 
         self._configure_hooks = configure_hooks
         self._configure_container = configure_container
@@ -2953,10 +2969,43 @@ class Server:
 
                 return db
 
+            elasticsearch_doc_client: Any = None
+
+            async def make_elasticsearch_db(name: str) -> DocumentDatabase:
+                nonlocal elasticsearch_doc_client
+
+                if importlib.util.find_spec("elasticsearch") is None:
+                    raise SDKError(
+                        "Elasticsearch requires an additional package to be installed. "
+                        "Install it with: pip install elasticsearch"
+                    )
+
+                from parlant.adapters.db.elasticsearch import (
+                    ElasticsearchDocumentDatabase,
+                    create_elasticsearch_document_client_from_env,
+                    get_elasticsearch_document_index_prefix_from_env,
+                )
+
+                if elasticsearch_doc_client is None:
+                    elasticsearch_doc_client = create_elasticsearch_document_client_from_env()
+
+                doc_index_prefix = get_elasticsearch_document_index_prefix_from_env()
+
+                db = await self._exit_stack.enter_async_context(
+                    ElasticsearchDocumentDatabase(
+                        elasticsearch_client=elasticsearch_doc_client,
+                        index_prefix=f"{doc_index_prefix}_db",
+                        logger=c()[Logger],
+                        store_context=name,
+                    )
+                )
+
+                return db
+
             async def make_persistable_store(t: type[T], spec: str, name: str, **kwargs: Any) -> T:
                 store: T
 
-                if spec in ["transient", "local"]:
+                if spec in ["transient", "local", "elasticsearch"]:
                     store = await self._exit_stack.enter_async_context(
                         t(
                             database=await cast(
@@ -2966,6 +3015,7 @@ class Server:
                                     "local": lambda: make_json_db(
                                         PARLANT_HOME_DIR / f"{name}.json"
                                     ),
+                                    "elasticsearch": lambda: make_elasticsearch_db(name),
                                 },
                             )[spec](),
                             allow_migration=self._migrate,
@@ -2986,8 +3036,8 @@ class Server:
                     return store
                 else:
                     raise SDKError(
-                        f"Invalid session store type: {self._session_store}. "
-                        "Expected 'transient', 'local', or a MongoDB connection string."
+                        f"Invalid store type: {spec}. "
+                        "Expected 'transient', 'local', 'elasticsearch', or a MongoDB connection string."
                     )
 
             if isinstance(self._session_store, SessionStore):
@@ -3033,6 +3083,53 @@ class Server:
             async def get_embedder_type() -> type[Embedder]:
                 return type(await c()[NLPService].get_embedder())
 
+            # Configure embedding cache based on cache_store setting
+            if c()[OptimizationPolicy].use_embedding_cache():
+                embedding_cache_db: DocumentDatabase
+                if self._cache_store == "elasticsearch":
+                    embedding_cache_db = await make_elasticsearch_db("embedding_cache")
+                elif self._cache_store == "local":
+                    embedding_cache_db = await make_json_db(PARLANT_HOME_DIR / "cache_embeddings.json")
+                else:  # transient
+                    embedding_cache_db = TransientDocumentDatabase()
+
+                c()[EmbeddingCache] = BasicEmbeddingCache(embedding_cache_db)
+            else:
+                c()[EmbeddingCache] = NullEmbeddingCache()
+
+            # Create vector database based on configuration
+            if self._vector_store == "elasticsearch":
+                if importlib.util.find_spec("elasticsearch") is None:
+                    raise SDKError(
+                        "Elasticsearch requires an additional package to be installed. "
+                        "Install it with: pip install elasticsearch"
+                    )
+
+                from parlant.adapters.vector_db.elasticsearch import (
+                    ElasticsearchVectorDatabase,
+                    create_elasticsearch_client_from_env,
+                    get_elasticsearch_index_prefix_from_env,
+                )
+
+                es_vector_client = create_elasticsearch_client_from_env()
+                es_index_prefix = get_elasticsearch_index_prefix_from_env()
+
+                vector_db = await self._exit_stack.enter_async_context(
+                    ElasticsearchVectorDatabase(
+                        elasticsearch_client=es_vector_client,
+                        index_prefix=es_index_prefix,
+                        logger=c()[Logger],
+                        embedder_factory=embedder_factory,
+                        embedding_cache_provider=lambda: c()[EmbeddingCache],
+                    )
+                )
+            else:  # transient
+                vector_db = TransientVectorDatabase(
+                    c()[Logger],
+                    embedder_factory,
+                    lambda: c()[EmbeddingCache],
+                )
+
             for vector_store_interface, vector_store_type in [
                 (GlossaryStore, GlossaryVectorStore),
                 (CannedResponseStore, CannedResponseVectorStore),
@@ -3042,11 +3139,7 @@ class Server:
                 c()[vector_store_interface] = await self._exit_stack.enter_async_context(
                     vector_store_type(
                         id_generator=c()[IdGenerator],
-                        vector_db=TransientVectorDatabase(
-                            c()[Logger],
-                            embedder_factory,
-                            lambda: c()[EmbeddingCache],
-                        ),
+                        vector_db=vector_db,
                         document_db=TransientDocumentDatabase(),
                         embedder_factory=embedder_factory,
                         embedder_type_provider=get_embedder_type,
@@ -3098,10 +3191,40 @@ class Server:
             await self._exit_stack.enter_async_context(self._plugin_server)
             self._exit_stack.push_async_callback(self._plugin_server.shutdown)
 
-            self._evaluator = _CachedEvaluator(
-                db=JSONFileDocumentDatabase(c[Logger], PARLANT_HOME_DIR / "evaluation_cache.json"),
-                container=c,
-            )
+            # Create evaluation cache database based on cache_store setting
+            eval_cache_db: DocumentDatabase
+            if self._cache_store == "elasticsearch":
+                if importlib.util.find_spec("elasticsearch") is None:
+                    raise SDKError(
+                        "Elasticsearch requires an additional package to be installed. "
+                        "Install it with: pip install elasticsearch"
+                    )
+
+                from parlant.adapters.db.elasticsearch import (
+                    ElasticsearchDocumentDatabase,
+                    create_elasticsearch_document_client_from_env,
+                    get_elasticsearch_document_index_prefix_from_env,
+                )
+
+                es_doc_client = create_elasticsearch_document_client_from_env()
+                doc_index_prefix = get_elasticsearch_document_index_prefix_from_env()
+
+                eval_cache_db = await self._exit_stack.enter_async_context(
+                    ElasticsearchDocumentDatabase(
+                        elasticsearch_client=es_doc_client,
+                        index_prefix=f"{doc_index_prefix}_db",
+                        logger=c[Logger],
+                        store_context="evaluation_cache",
+                    )
+                )
+            elif self._cache_store == "local":
+                eval_cache_db = await self._exit_stack.enter_async_context(
+                    JSONFileDocumentDatabase(c[Logger], PARLANT_HOME_DIR / "evaluation_cache.json")
+                )
+            else:  # transient
+                eval_cache_db = TransientDocumentDatabase()
+
+            self._evaluator = _CachedEvaluator(db=eval_cache_db, container=c)
             await self._exit_stack.enter_async_context(self._evaluator)
 
             if self._initialize:

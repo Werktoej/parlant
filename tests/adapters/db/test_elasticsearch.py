@@ -88,15 +88,23 @@ def doc_version() -> Version.String:
 
 
 async def cleanup_test_indices() -> None:
-    """Helper function to cleanup all test indices."""
+    """Helper function to cleanup all test indices and templates."""
     es_client = create_elasticsearch_client_from_env()
     try:
-        all_indices = await es_client.indices.get(index="test_parlant_*")
+        # Cleanup vector database indices (with _vecdb_ infix)
+        all_indices = await es_client.indices.get(index="test_parlant_vecdb_*")
         for index_name in all_indices.keys():
             try:
                 await es_client.indices.delete(index=index_name)
             except Exception:
                 pass
+        
+        # Cleanup vector database template
+        try:
+            await es_client.indices.delete_index_template(name="test_parlant_vecdb_template")
+        except Exception:
+            pass  # Template doesn't exist
+            
     except Exception:
         pass  # No indices to clean
     finally:

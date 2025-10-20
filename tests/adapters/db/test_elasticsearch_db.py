@@ -104,7 +104,10 @@ async def test_index_prefix() -> AsyncIterator[str]:
 
 
 async def cleanup_test_indices(index_prefix: str) -> None:
-    """Helper function to cleanup all test indices."""
+    """Helper function to cleanup all test indices.
+    
+    Note: Document database doesn't create templates, so only indices need cleanup.
+    """
     if AsyncElasticsearch is None:
         return
 

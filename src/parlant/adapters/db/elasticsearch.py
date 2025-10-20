@@ -136,6 +136,19 @@ def get_elasticsearch_document_index_settings_from_env() -> dict[str, Any]:
     }
 
 
+def get_elasticsearch_document_index_prefix_from_env() -> str:
+    """
+    Get Elasticsearch index prefix for document storage from environment variables.
+
+    Environment variables:
+        ELASTICSEARCH__INDEX_PREFIX: Index prefix (default: parlant)
+
+    Returns:
+        Index prefix string
+    """
+    return os.environ.get("ELASTICSEARCH__INDEX_PREFIX", "parlant")
+
+
 class ElasticsearchDocumentDatabase(DocumentDatabase):
     """
     An Elasticsearch implementation of the DocumentDatabase interface.
@@ -168,8 +181,11 @@ class ElasticsearchDocumentDatabase(DocumentDatabase):
         self._metadata_suffix = store_context
 
     def _get_index_name(self, collection_name: str) -> str:
-        """Generate the full Elasticsearch index name for a collection."""
-        return f"{self.index_prefix}_{collection_name}"
+        """Generate the full Elasticsearch index name for a collection.
+        
+        Elasticsearch requires index names to be lowercase, so we normalize the name here.
+        """
+        return f"{self.index_prefix}_{collection_name}".lower()
 
     async def _ensure_index_exists(self, index_name: str, schema: type[TDocument]) -> None:
         """
@@ -208,6 +224,8 @@ class ElasticsearchDocumentDatabase(DocumentDatabase):
                             "tag_id": {"type": "keyword"},
                             # Other common ID fields
                             "evaluation_id": {"type": "keyword"},
+                            # Embedding cache fields (store without indexing)
+                            "vectors": {"type": "object", "enabled": False},
                             # Text fields that should be both searchable and exact-match
                             "name": {
                                 "type": "text",
