@@ -56,6 +56,7 @@ customer_creation_params_example: ExampleJson = {
         "email": "scooby@dooby.do",
         "VIP": "Yes",
     },
+    "id": "my_custom_id",
 }
 
 
@@ -132,6 +133,11 @@ class CustomerCreationParamsDTO(
     name: CustomerNameField
     metadata: CustomerMetadataField | None = None
     tags: TagIdSequenceField | None = None
+    id: CustomerId | None = Field(
+        default=None,
+        description="Optional custom customer ID. If not provided, one will be auto-generated.",
+        examples=["my_custom_id", "customer_12345"],
+    )
 
 
 CustomerMetadataUnsetField: TypeAlias = Annotated[
@@ -251,6 +257,7 @@ def create_router(
 
         A customer may be created with as little as a `name`.
         `metadata` key-value pairs and additional `tags` may be attached to a customer.
+        Optionally, a custom `id` can be provided; if not, one will be auto-generated.
         """
         await authorization_policy.authorize(
             request=request,
@@ -261,6 +268,7 @@ def create_router(
             name=params.name,
             extra=params.metadata if params.metadata else {},
             tags=params.tags,
+            customer_id=params.id,
         )
 
         return CustomerDTO(

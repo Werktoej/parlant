@@ -2729,8 +2729,19 @@ class Server:
         name: str,
         metadata: Mapping[str, str] = {},
         tags: Sequence[TagId] = [],
+        id: CustomerId | None = None,
     ) -> Customer:
-        """Creates a new customer with the specified name and metadata."""
+        """Creates a new customer with the specified name and metadata.
+        
+        Args:
+            name: The customer's name
+            metadata: Optional key-value metadata for the customer
+            tags: Optional list of tag IDs to associate with the customer
+            id: Optional custom customer ID. If not provided, one will be auto-generated.
+        
+        Returns:
+            The created Customer object
+        """
 
         self._advance_creation_progress()
 
@@ -2738,6 +2749,7 @@ class Server:
             name=name,
             extra=metadata,
             tags=tags,
+            customer_id=id,
         )
 
         return Customer(

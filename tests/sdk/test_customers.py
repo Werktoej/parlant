@@ -80,3 +80,26 @@ class Test_that_a_customer_can_be_found_by_id(SDKTest):
     async def run(self, ctx: Context) -> None:
         assert self.customer is not None
         assert self.customer.id == self.c1.id
+
+
+class Test_that_a_customer_can_be_created_with_custom_id(SDKTest):
+    async def setup(self, server: p.Server) -> None:
+        self.custom_id = "my_custom_sdk_customer"
+        self.customer = await server.create_customer(
+            name="Custom ID Customer",
+            metadata={"source": "sdk_test"},
+            id=self.custom_id,
+        )
+
+    async def run(self, ctx: Context) -> None:
+        customer_store = ctx.container[CustomerStore]
+        
+        # Verify the customer was created with the custom ID
+        assert self.customer.id == self.custom_id
+        assert self.customer.name == "Custom ID Customer"
+        assert self.customer.metadata == {"source": "sdk_test"}
+        
+        # Verify we can retrieve it from the store
+        retrieved = await customer_store.read_customer(self.custom_id)
+        assert retrieved.id == self.custom_id
+        assert retrieved.name == "Custom ID Customer"

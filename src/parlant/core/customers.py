@@ -55,6 +55,7 @@ class CustomerStore(ABC):
         extra: Mapping[str, str] = {},
         creation_utc: Optional[datetime] = None,
         tags: Optional[Sequence[TagId]] = None,
+        customer_id: Optional[CustomerId] = None,
     ) -> Customer: ...
 
     @abstractmethod
@@ -231,14 +232,24 @@ class CustomerDocumentStore(CustomerStore):
         extra: Mapping[str, str] = {},
         creation_utc: Optional[datetime] = None,
         tags: Optional[Sequence[TagId]] = None,
+        customer_id: Optional[CustomerId] = None,
     ) -> Customer:
         async with self._lock.writer_lock:
             creation_utc = creation_utc or datetime.now(timezone.utc)
 
-            customer_checksum = md5_checksum(f"{name}{extra}{tags}")
+            if customer_id is None:
+                customer_checksum = md5_checksum(f"{name}{extra}{tags}")
+                customer_id = CustomerId(self._id_generator.generate(customer_checksum))
+            else:
+                # Check if customer with this ID already exists
+                existing = await self._customers_collection.find_one(
+                    filters={"id": {"$eq": customer_id}}
+                )
+                if existing:
+                    raise ValueError(f"Customer with id '{customer_id}' already exists")
 
             customer = Customer(
-                id=CustomerId(self._id_generator.generate(customer_checksum)),
+                id=customer_id,
                 name=name,
                 extra=extra,
                 creation_utc=creation_utc,

@@ -285,3 +285,96 @@ async def test_that_adding_nonexistent_tag_to_customer_returns_404(
     )
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+async def test_that_a_customer_can_be_created_with_custom_id(
+    async_client: httpx.AsyncClient,
+    container: Container,
+) -> None:
+    custom_id = "my_custom_customer_id"
+    name = "John Doe"
+    metadata = {"email": "john@example.com"}
+
+    response = await async_client.post(
+        "/customers",
+        json={
+            "name": name,
+            "metadata": metadata,
+            "id": custom_id,
+        },
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+
+    customer = response.json()
+    assert customer["id"] == custom_id
+    assert customer["name"] == name
+    assert customer["metadata"] == metadata
+
+    # Verify customer can be retrieved with the custom ID
+    customer_store = container[CustomerStore]
+    retrieved_customer = await customer_store.read_customer(customer_id=custom_id)
+    assert retrieved_customer.id == custom_id
+    assert retrieved_customer.name == name
+
+
+async def test_that_multiple_customers_can_be_created_with_different_custom_ids(
+    async_client: httpx.AsyncClient,
+) -> None:
+    # Create first customer with custom ID
+    response1 = await async_client.post(
+        "/customers",
+        json={
+            "name": "First Customer",
+            "id": "custom_id_1",
+        },
+    )
+    assert response1.status_code == status.HTTP_201_CREATED
+    assert response1.json()["id"] == "custom_id_1"
+
+    # Create second customer with different custom ID
+    response2 = await async_client.post(
+        "/customers",
+        json={
+            "name": "Second Customer",
+            "id": "custom_id_2",
+        },
+    )
+    assert response2.status_code == status.HTTP_201_CREATED
+    assert response2.json()["id"] == "custom_id_2"
+
+    # Both should be retrievable
+    get_response1 = await async_client.get("/customers/custom_id_1")
+    assert get_response1.status_code == status.HTTP_200_OK
+    assert get_response1.json()["name"] == "First Customer"
+
+    get_response2 = await async_client.get("/customers/custom_id_2")
+    assert get_response2.status_code == status.HTTP_200_OK
+    assert get_response2.json()["name"] == "Second Customer"
+
+
+async def test_that_creating_customer_with_duplicate_custom_id_fails(
+    async_client: httpx.AsyncClient,
+    container: Container,
+) -> None:
+    from pytest import raises
+    custom_id = "duplicate_customer_id"
+
+    # Create first customer with custom ID
+    response1 = await async_client.post(
+        "/customers",
+        json={
+            "name": "First Customer",
+            "id": custom_id,
+        },
+    )
+    assert response1.status_code == status.HTTP_201_CREATED
+    assert response1.json()["id"] == custom_id
+
+    # Try to create second customer with same ID at the store level - should fail
+    customer_store = container[CustomerStore]
+    with raises(ValueError, match="already exists"):
+        await customer_store.create_customer(
+            name="Second Customer",
+            customer_id=custom_id,
+        )
