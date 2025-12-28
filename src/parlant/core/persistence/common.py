@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any, Callable, Mapping, NewType, Protocol, Union, cast, get_type_hints
 from typing_extensions import Literal, TypedDict
 
@@ -19,6 +21,26 @@ from parlant.core.common import Version
 
 
 ObjectId = NewType("ObjectId", str)
+
+
+class SortDirection(Enum):
+    """Sort direction for paginated queries."""
+
+    ASC = auto()
+    DESC = auto()
+
+
+@dataclass(frozen=True)
+class Cursor:
+    """Cursor for pagination, containing position information.
+
+    Attributes:
+        creation_utc: The creation timestamp of the last item in the previous page.
+        id: The ID of the last item in the previous page (used as tiebreaker).
+    """
+
+    creation_utc: str
+    id: ObjectId
 
 
 class MigrationRequired(Exception):
